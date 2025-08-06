@@ -1,24 +1,32 @@
-# decoder.py
-
 import sounddevice as sd
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 import time
+from collections import deque
 from morse_code import REVERSE_MORSE_CODE_DICT
 
+# --- Config ---
 SAMPLE_RATE = 44100
-FRAME_DURATION = 0.05
+FRAME_DURATION = 0.05  # 50ms
 THRESHOLD = 0.01
-FREQ_RANGE = (400, 450)
+FREQ_RANGE = (430, 430)
 
 dot_threshold = 0.25
 dash_threshold = 0.5
 letter_space_threshold = 0.75
 word_space_threshold = 1.5
 
+# --- State ---
 current_symbol = ""
 decoded_message = ""
 last_signal_time = None
 
+# --- Visualization State ---
+BUFFER_SIZE = int(5 / FRAME_DURATION)  # 5 seconds of rolling amplitude
+amplitude_buffer = deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE)
+
+# --- Frequency Detection ---
 def detect_dominant_frequency(audio):
     fft = np.fft.fft(audio)
     freqs = np.fft.fftfreq(len(fft), 1 / SAMPLE_RATE)
@@ -26,6 +34,7 @@ def detect_dominant_frequency(audio):
     freqs = freqs[:len(freqs)//2]
     return freqs[np.argmax(fft)]
 
+# --- Morse Decoding ---
 def decode_morse(morse_code):
     words = morse_code.strip().split(" / ")
     decoded = []
@@ -34,11 +43,13 @@ def decode_morse(morse_code):
         decoded.append(decoded_word)
     return ' '.join(decoded)
 
+# --- Audio Callback ---
 def callback(indata, frames, time_info, status):
     global current_symbol, decoded_message, last_signal_time
 
     audio = indata[:, 0]
     amplitude = np.linalg.norm(audio)
+    amplitude_buffer.append(amplitude)
 
     if amplitude > THRESHOLD:
         freq = detect_dominant_frequency(audio)
@@ -70,10 +81,29 @@ def callback(indata, frames, time_info, status):
                 decoded_message += ' '
                 print(f"[WORD GAP] {decoded_message.strip()}")
 
-print("Listening for Morse (400–450Hz)... Press Ctrl+C to stop.")
-with sd.InputStream(callback=callback, channels=1, samplerate=SAMPLE_RATE, blocksize=int(SAMPLE_RATE * FRAME_DURATION)):
+# --- Live Plotting ---
+fig, ax = plt.subplots()
+x = np.linspace(-BUFFER_SIZE * FRAME_DURATION, 0, BUFFER_SIZE)
+line, = ax.plot(x, [0]*BUFFER_SIZE)
+ax.set_ylim(0, 0.05)
+ax.set_xlim(-BUFFER_SIZE * FRAME_DURATION, 0)
+ax.set_title("Real-time Audio Amplitude")
+ax.set_xlabel("Time (s)")
+ax.set_ylabel("Amplitude")
+
+def update_plot(frame):
+    line.set_ydata(amplitude_buffer)
+    return line,
+
+print("Listening for Morse (400–480Hz)... Close the plot window or press Ctrl+C to stop.")
+
+stream = sd.InputStream(callback=callback, channels=1, samplerate=SAMPLE_RATE, blocksize=int(SAMPLE_RATE * FRAME_DURATION))
+
+with stream:
+    ani = animation.FuncAnimation(fig, update_plot, interval=50, blit=True)
     try:
-        while True:
-            time.sleep(0.1)
+        plt.show()
     except KeyboardInterrupt:
-        print("\nFinal Decoded Message:", decoded_message.strip())
+        pass
+
+print("\nFinal Decoded Message:", decoded_message.strip())
